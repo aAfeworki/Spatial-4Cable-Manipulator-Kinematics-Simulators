@@ -1,0 +1,182 @@
+import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")  # embed matplotlib in Tkinter
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D)
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import tkinter as tk
+from tkinter import ttk
+
+# ============================
+# Workspace (cube) parameters
+# ============================
+L = 10.0  # X dimension (width)
+H = 10.0   # Y dimension (depth)
+D = 10.0   # Z dimension (downward height)
+
+# ============================
+# Anchors on top face (z=0)
+# ============================
+anchors = {
+    "L1": np.array([0.0, H, 0.0]),
+    "L2": np.array([0.0, 0.0, 0.0]),
+    "L3": np.array([L,   H, 0.0]),
+    "L4": np.array([L,   0.0, 0.0]),
+}
+
+# Colors for cables
+CABLE_COLORS = ["b", "g", "c", "m"]
+
+# =========================================
+# Kinematics: lengths from (x, y, z) (Z>0)
+# =========================================
+def cable_lengths(x, y, z):
+    L1 = np.sqrt(x**2 + (H - y)**2 + z**2)
+    L2 = np.sqrt(x**2 + y**2 + z**2)
+    L3 = np.sqrt((L - x)**2 + (H - y)**2 + z**2)
+    L4 = np.sqrt((L - x)**2 + y**2 + z**2)
+    return L1, L2, L3, L4
+
+# ============================
+# Tkinter UI + Matplotlib 3D
+# ============================
+root = tk.Tk()
+root.title("4-Cable Spatial Manipulator (3D) — Z Down")
+
+# Layout frames
+main = tk.Frame(root)
+main.pack(fill="both", expand=True)
+
+ctrl = tk.Frame(main)
+ctrl.pack(side="left", fill="y", padx=8, pady=8)
+
+plot_frame = tk.Frame(main)
+plot_frame.pack(side="right", fill="both", expand=True, padx=8, pady=8)
+
+# Matplotlib Figure (3D)
+fig = plt.Figure(figsize=(7, 6))
+ax = fig.add_subplot(111, projection='3d')
+canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+canvas.get_tk_widget().pack(fill="both", expand=True)
+
+# Helper: draw cube edges & anchors
+def draw_cube_and_anchors(ax):
+    # Top face (z=0)
+    top = np.array([[0, 0, 0], [L, 0, 0], [L, H, 0], [0, H, 0], [0, 0, 0]])
+    ax.plot(top[:,0], top[:,1], top[:,2], 'k-', lw=1.2)
+
+    # Bottom face (z=D)
+    bot = np.array([[0, 0, D], [L, 0, D], [L, H, D], [0, H, D], [0, 0, D]])
+    ax.plot(bot[:,0], bot[:,1], bot[:,2], 'k-', lw=1.0, alpha=0.6)
+
+    # Vertical edges
+    for (x0, y0) in [(0,0), (L,0), (L,H), (0,H)]:
+        ax.plot([x0, x0], [y0, y0], [0, D], 'k--', lw=0.8, alpha=0.6)
+
+    # Anchors
+    for key, pt in anchors.items():
+        ax.scatter([pt[0]], [pt[1]], [pt[2]], marker='s', s=40, color='k')
+        ax.text(pt[0], pt[1], pt[2], f" {key}", zdir='x')
+
+# Configure axes (clears and sets consistent view)
+def set_axes():
+    ax.clear()
+    ax.set_xlim(0, L)
+    ax.set_ylim(0, H)
+    ax.set_zlim(0, D)
+    ax.invert_zaxis()  # <-- fixed: no argument
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title("4-Cable Spatial Manipulator")
+    draw_cube_and_anchors(ax)
+
+# Info labels
+info = tk.Label(ctrl, text="End Effector & Cable Lengths", font=("TkDefaultFont", 10, "bold"))
+info.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,4))
+
+xyz_var = tk.StringVar(value="x=0.00, y=0.00, z=0.00")
+lens_var = tk.StringVar(value="L1=0.00   L2=0.00   L3=0.00   L4=0.00")
+
+xyz_lbl = tk.Label(ctrl, textvariable=xyz_var, anchor="w", justify="left")
+xyz_lbl.grid(row=1, column=0, columnspan=2, sticky="w")
+lens_lbl = tk.Label(ctrl, textvariable=lens_var, anchor="w", justify="left")
+lens_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0,8))
+
+# Sliders
+def make_slider(row, text, from_, to_, init, command):
+    tk.Label(ctrl, text=text).grid(row=row, column=0, sticky="w")
+    s = tk.Scale(ctrl, from_=from_, to=to_, orient="horizontal",
+                 resolution=0.01, length=260, command=command)
+    s.set(init)
+    s.grid(row=row, column=1, sticky="we", padx=(6,0))
+    return s
+
+def on_change(_event=None):
+    x = sx.get()
+    y = sy.get()
+    z = sz.get()
+    update_plot(x, y, z)
+
+sx = make_slider(3, "X", 0.0, L, L/2, on_change)
+sy = make_slider(4, "Y", 0.0, H, H/2, on_change)
+sz = make_slider(5, "Z (down)", 0.0, D, D/2, on_change)
+
+def reset_center():
+    sx.set(L/2); sy.set(H/2); sz.set(D/2)
+    on_change()
+
+btns = tk.Frame(ctrl)
+btns.grid(row=6, column=0, columnspan=2, pady=8, sticky="we")
+ttk.Button(btns, text="Center", command=reset_center).pack(side="left", padx=4)
+ttk.Button(btns, text="Top (z=0)", command=lambda: (sz.set(0.0), on_change())).pack(side="left", padx=4)
+ttk.Button(btns, text="Bottom (z=D)", command=lambda: (sz.set(D), on_change())).pack(side="left", padx=4)
+
+# Trace storage
+trace_pts = []
+trace_max_len = 400
+
+# ============================
+# Update/Draw function
+# ============================
+def update_plot(x, y, z):
+    # clamp
+    x = float(np.clip(x, 0.0, L))
+    y = float(np.clip(y, 0.0, H))
+    z = float(np.clip(z, 0.0, D))
+
+    # redraw axes and anchors
+    set_axes()
+
+    # compute cable lengths
+    l1, l2, l3, l4 = cable_lengths(x, y, z)
+
+    # draw cables (and keep reference to them)
+    new_cables = []
+    an_order = [anchors["L1"], anchors["L2"], anchors["L3"], anchors["L4"]]
+    for i, a in enumerate(an_order):
+        ln = ax.plot([a[0], x], [a[1], y], [a[2], z], '-', lw=2, color=CABLE_COLORS[i])[0]
+        new_cables.append(ln)
+
+    # draw end effector
+    ax.plot([x], [y], [z], 'ro', markersize=6)
+
+    # update trace
+    trace_pts.append((x, y, z))
+    if len(trace_pts) > trace_max_len:
+        del trace_pts[0]
+    if len(trace_pts) > 1:
+        tarr = np.array(trace_pts)
+        ax.plot(tarr[:,0], tarr[:,1], tarr[:,2], 'r--', lw=1, alpha=0.6)
+
+    # update info
+    xyz_var.set(f"x={x:.2f}, y={y:.2f}, z={z:.2f}")
+    lens_var.set(f"L1={l1:.2f}   L2={l2:.2f}   L3={l3:.2f}   L4={l4:.2f}")
+
+    # refresh canvas
+    canvas.draw_idle()
+
+# initialize scene
+reset_center()
+
+root.mainloop()

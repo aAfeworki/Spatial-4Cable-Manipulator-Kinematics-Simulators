@@ -1,0 +1,200 @@
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+import matplotlib.animation as animation
+
+# ====== Workspace / Anchors (top face z=0) ======
+L = 10.0  # X width
+H = 10.0  # Y depth
+D = 10.0   # max Z (downwards) - for plotting limits
+
+anchors = {
+    "q1": np.array([0.0, H, 0.0]),  # top-left (x=0, y=H, z=0)
+    "q2": np.array([0.0, 0.0, 0.0]),# bottom-left (x=0, y=0, z=0)
+    "q3": np.array([L,   H, 0.0]),  # top-right
+    "q4": np.array([L,   0.0, 0.0]) # bottom-right
+}
+
+# ====== Inverse Kinematics (3D) ======
+def ik_3d(x, y, z):
+    """
+    Given end-effector coordinates (x,y,z) where z is positive DOWN from the top face,
+    compute cable lengths q1..q4 using:
+      q1^2 = x^2 + (H-y)^2 + z^2
+      q2^2 = x^2 + y^2 + z^2
+      q3^2 = (L-x)^2 + (H-y)^2 + z^2
+      q4^2 = (L-x)^2 + y^2 + z^2
+    """
+    q1 = np.sqrt(x**2 + (H - y)**2 + z**2)
+    q2 = np.sqrt(x**2 + y**2 + z**2)
+    q3 = np.sqrt((L - x)**2 + (H - y)**2 + z**2)
+    q4 = np.sqrt((L - x)**2 + y**2 + z**2)
+    return q1, q2, q3, q4
+
+# ====== Run IK and Save Output ======
+def run_ik():
+    try:
+        # Get user input (expressions as function of t, using numpy as np)
+        x_expr = x_entry.get()
+        y_expr = y_entry.get()
+        z_expr = z_entry.get()
+        t_end = float(t_entry.get())
+        steps = int(steps_entry.get())
+
+        # Generate time vector
+        t = np.linspace(0, t_end, steps)
+
+        # Evaluate x(t), y(t), z(t)
+        # Use a restricted globals dict for eval (t and np only)
+        safe_globals = {"np": np}
+        x_vals = [eval(x_expr, safe_globals, {"t": val}) for val in t]
+        y_vals = [eval(y_expr, safe_globals, {"t": val}) for val in t]
+        z_vals = [eval(z_expr, safe_globals, {"t": val}) for val in t]
+
+        # Compute cable lengths
+        q1s, q2s, q3s, q4s = [], [], [], []
+        for xv, yv, zv in zip(x_vals, y_vals, z_vals):
+            q1, q2, q3, q4 = ik_3d(xv, yv, zv)
+            q1s.append(q1)
+            q2s.append(q2)
+            q3s.append(q3)
+            q4s.append(q4)
+
+        # Save CSV
+        data = {
+            "time": t,
+            "q1 (top-left)": q1s,
+            "q2 (bottom-left)": q2s,
+            "q3 (top-right)": q3s,
+            "q4 (bottom-right)": q4s,
+        }
+        df = pd.DataFrame(data)
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                                 filetypes=[("CSV files", "*.csv")])
+        if file_path:
+            df.to_csv(file_path, index=False)
+            messagebox.showinfo("Success", f"File saved as {file_path}")
+
+        # Launch simulator with the computed trajectories
+        simulate_3d(x_vals, y_vals, z_vals, q1s, q2s, q3s, q4s, t)
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# ====== Simulator (3D Animation) ======
+def simulate_3d(x_vals, y_vals, z_vals, q1s, q2s, q3s, q4s, times):
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot limits and title
+    ax.set_xlim(0, L)
+    ax.set_ylim(0, H)
+    ax.set_zlim(0, D)
+    ax.invert_zaxis()  # so z=0 is top face visually
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z (down)")
+    ax.set_title("4-Cable Spatial Manipulator - IK Simulation")
+
+    # draw cube edges (top and bottom and verticals)
+    top = np.array([[0,0,0],[L,0,0],[L,H,0],[0,H,0],[0,0,0]])
+    bot = np.array([[0,0,D],[L,0,D],[L,H,D],[0,H,D],[0,0,D]])
+    ax.plot(top[:,0], top[:,1], top[:,2], 'k-', lw=1.2)
+    ax.plot(bot[:,0], bot[:,1], bot[:,2], 'k-', lw=1.0, alpha=0.5)
+    for (x0,y0) in [(0,0),(L,0),(L,H),(0,H)]:
+        ax.plot([x0,x0],[y0,y0],[0,D],'k--', lw=0.8, alpha=0.5)
+
+    # plot anchors
+    for key, pt in anchors.items():
+        ax.scatter([pt[0]],[pt[1]],[pt[2]], marker='s', s=40, color='k')
+        ax.text(pt[0], pt[1], pt[2], f" {key}", zdir='x')
+
+    # prepare 4 cable Line3D objects (initially dummy)
+    cable_lines = []
+    for _ in range(4):
+        line, = ax.plot([0,0],[0,0],[0,0], '-', lw=2)
+        cable_lines.append(line)
+
+    # end effector marker and trace
+    end_eff, = ax.plot([], [], [], 'ro', markersize=6)
+    trace_line, = ax.plot([], [], [], 'r--', lw=1, alpha=0.6)
+    x_hist, y_hist, z_hist = [], [], []
+
+    # info box
+    info_text = ax.text2D(0.0, 0.85, "", transform=ax.transAxes, fontsize=9,
+                          bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8))
+
+    def update(i):
+        x = x_vals[i]
+        y = y_vals[i]
+        z = z_vals[i]
+        # update cables: anchors -> (x,y,z)
+        anchor_order = [anchors["q1"], anchors["q2"], anchors["q3"], anchors["q4"]]
+        for j, ln in enumerate(cable_lines):
+            xdata = [anchor_order[j][0], x]
+            ydata = [anchor_order[j][1], y]
+            zdata = [anchor_order[j][2], z]
+            ln.set_data(xdata, ydata)
+            ln.set_3d_properties(zdata)
+
+        # update end effector
+        end_eff.set_data([x], [y])
+        end_eff.set_3d_properties([z])
+
+        # update trace
+        x_hist.append(x); y_hist.append(y); z_hist.append(z)
+        trace_line.set_data(x_hist, y_hist)
+        trace_line.set_3d_properties(z_hist)
+
+        # update info (show position and current cable lengths)
+        info_text.set_text(
+            f"Step: {i+1}/{len(x_vals)}   t={times[i]:.2f}\n"
+            f"x={x:.2f}, y={y:.2f}, z={z:.2f}\n"
+            f"q1={q1s[i]:.3f}  q2={q2s[i]:.3f}\nq3={q3s[i]:.3f}  q4={q4s[i]:.3f}"
+        )
+
+        return cable_lines + [end_eff, trace_line, info_text]
+
+    ani = animation.FuncAnimation(fig, update, frames=len(x_vals),
+                                  interval=100, blit=False, repeat=False)
+    plt.show()
+
+# ====== GUI Setup (Tkinter) ======
+root = tk.Tk()
+root.title("4-Cable Spatial Manipulator - IK Generator & Simulator (3D)")
+
+tk.Label(root, text="x(t) function:").grid(row=0, column=0, sticky="w")
+x_entry = tk.Entry(root, width=45)
+x_entry.insert(0, "5 + 3*np.cos(t)*np.cos(8*t)")
+x_entry.grid(row=0, column=1, padx=6, pady=3)
+
+tk.Label(root, text="y(t) function:").grid(row=1, column=0, sticky="w")
+y_entry = tk.Entry(root, width=45)
+y_entry.insert(0, "5 + 3*np.cos(t)*np.sin(8*t)")
+y_entry.grid(row=1, column=1, padx=6, pady=3)
+
+tk.Label(root, text="z(t) function (z >= 0, downwards):").grid(row=2, column=0, sticky="w")
+z_entry = tk.Entry(root, width=45)
+z_entry.insert(0, "5 + 2*np.sin(t)")  # example
+z_entry.grid(row=2, column=1, padx=6, pady=3)
+
+tk.Label(root, text="Simulation time (t_end):").grid(row=3, column=0, sticky="w")
+t_entry = tk.Entry(root, width=20)
+t_entry.insert(0, "6.28")
+t_entry.grid(row=3, column=1, sticky="w", padx=6)
+
+tk.Label(root, text="Steps:").grid(row=4, column=0, sticky="w")
+steps_entry = tk.Entry(root, width=20)
+steps_entry.insert(0, "200")
+steps_entry.grid(row=4, column=1, sticky="w", padx=6, pady=(0,6))
+
+run_button = tk.Button(root, text="Generate IK + Simulate (3D)", command=run_ik)
+run_button.grid(row=5, column=0, columnspan=2, pady=8)
+
+root.mainloop()
